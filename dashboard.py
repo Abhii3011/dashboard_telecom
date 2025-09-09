@@ -27,6 +27,8 @@ for df in [df_perc, df_delay]:
     df.columns = [c.strip().lower().replace("/", "_").replace(" ", "_") for c in df.columns]
     df["filedate"] = pd.to_datetime(df["filedate"], errors="coerce")
 
+    
+
 # Interval columns (take from whichever dataset has them)
 interval_cols = [c for c in df_perc.columns if c not in ["region", "market", "enodeb_gnodeb", "filedate", "risk"]]
 
@@ -121,7 +123,10 @@ if not delay_filtered.empty:
     col3.plotly_chart(fig3, use_container_width=True)
 
     delay_avg_market = delay_filtered.groupby("market")[interval_cols].mean().mean(axis=1).reset_index(name="avg_delay")
-    fig4 = px.bar(delay_avg_market, x="market", y="avg_delay", title="Average Delay by Market", text_auto=True)
+    delay_avg_market["market"] = delay_avg_market["market"].astype(str)
+    fig4 = px.bar(delay_avg_market.astype(str), x="market", y="avg_delay", title="Average Delay by Market", text_auto=True)
+    fig4.update_xaxes(type="category")  # ensure categorical axis
+
     col4.plotly_chart(fig4, use_container_width=True)
 else:
     st.info("No Delay averages available for selected filters.")
@@ -137,7 +142,10 @@ if not sample_filtered.empty and "risk" in sample_filtered.columns:
     col5.plotly_chart(fig5, use_container_width=True)
 
     risk_market = sample_filtered.groupby("market")["risk"].sum().reset_index()
+    risk_market["market"] = risk_market["market"].astype(str)
     fig6 = px.bar(risk_market, x="market", y="risk", title="Risk Count by Market", text_auto=True)
+    fig6.update_xaxes(type="category")  
+
     col6.plotly_chart(fig6, use_container_width=True)
 else:
     st.info("No Risk data available for selected filters.")
