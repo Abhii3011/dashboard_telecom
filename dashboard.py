@@ -8,7 +8,7 @@ warnings.filterwarnings('ignore')
 # ---------------------
 # Page Config
 # ---------------------
-st.set_page_config(page_title="Telecom Network Dashboard", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Telecom Network Dashboard", layout="wide")
 
 # Fix heading overflow with CSS
 st.markdown("""
@@ -17,14 +17,15 @@ st.markdown("""
             font-size: 28px !important;
             font-weight: bold;
             text-align: center;
-            color: #003366;
+            color: #ffffff;
             padding: 10px;
+            background-color: #003366;
             border-bottom: 3px solid #0055A4;
         }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">📡 Telecom Network Performance Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Telecom Network Performance Dashboard</div>', unsafe_allow_html=True)
 
 # ---------------------
 # Load Data
@@ -33,7 +34,7 @@ try:
     df_perc = pd.read_csv("sample_dataset.csv")
     df_delay = pd.read_csv("delay_dataset.csv")
 except FileNotFoundError:
-    st.error("❌ CSV files not found. Make sure 'sample_dataset.csv' and 'delay_dataset.csv' exist in the project folder.")
+    st.error("CSV files not found. Make sure 'sample_dataset.csv' and 'delay_dataset.csv' exist in the project folder.")
     st.stop()
 
 # Standardize column names
@@ -42,8 +43,8 @@ for df in [df_perc, df_delay]:
     df["filedate"] = pd.to_datetime(df["filedate"], errors="coerce")
     df["market"] = df["market"].astype(str)
 
-# Interval columns
-interval_cols = [c for c in df_perc.columns if c not in ["region", "market", "enodeb_gnodeb", "filedate", "risk"]]
+# Interval columns (original)
+original_interval_cols = [c for c in df_perc.columns if c not in ["region", "market", "enodeb_gnodeb", "filedate", "risk"]]
 
 # ---------------------
 # Sidebar Filters
@@ -56,10 +57,62 @@ combined = pd.concat(
     ignore_index=True
 )
 
-# Replace everywhere with gNodeB
+# Rename columns
 combined.rename(columns={"enodeb_gnodeb": "gNodeB"}, inplace=True)
 df_perc.rename(columns={"enodeb_gnodeb": "gNodeB"}, inplace=True)
 df_delay.rename(columns={"enodeb_gnodeb": "gNodeB"}, inplace=True)
+
+# View Mode
+view_mode = st.sidebar.radio("View Mode", ["15-min Intervals", "Hourly", "Daily"])
+
+# Resampling
+def resample_to_hourly(df, interval_cols):
+    hour_map = {f"{h:02d}": [f"{h:02d}:{m:02d}" for m in range(0, 60, 15)] for h in range(24)}
+    hourly_df = df.copy()
+    for hour, cols in hour_map.items():
+        available = [c for c in cols if c in hourly_df.columns]
+        if available:
+            hourly_df[hour] = hourly_df[available].mean(axis=1)
+    return hourly_df[["region", "market", "gNodeB", "filedate"] + list(hour_map.keys())]
+
+def resample_to_daily(df, interval_cols):
+    df_daily = df.copy()
+    df_daily["daily_avg"] = df_daily[interval_cols].mean(axis=1)
+    return df_daily[["region", "market", "gNodeB", "filedate", "daily_avg"]]
+
+if view_mode == "Hourly":
+    delay_data = resample_to_hourly(df_delay, original_interval_cols)
+    sample_data = resample_to_hourly(df_perc, original_interval_cols)
+    interval_cols = [f"{h:02d}" for h in range(24)]
+elif view_mode == "Daily":
+    delay_data = resample_to_daily(df_delay, original_interval_cols)
+    sample_data = resample_to_daily(df_perc, original_interval_cols)
+    interval_cols = ["daily_avg"]
+else:
+    delay_data = df_delay.copy()
+    sample_data = df_perc.copy()
+    interval_cols = original_interval_cols
+
+# Risk-prone sites filter
+risk_prone_checkbox = st.sidebar.checkbox("Show Risk-Prone Sites Only")
+
+# Determine Risk-Prone Sites
+if risk_prone_checkbox:
+    # Check for file arrival below 100%
+    file_risk_sites = sample_data[sample_data[interval_cols].min(axis=1) < 100]["gNodeB"].unique()
+    
+    # Check for delay > 20 minutes (1200 seconds)
+    delay_risk_sites = delay_data[delay_data[interval_cols].max(axis=1) > 20 * 60]["gNodeB"].unique()
+    
+    # Combine and get unique risk sites
+    risk_gnodes = set(file_risk_sites) | set(delay_risk_sites)
+    all_gnodes = sorted(list(risk_gnodes))
+    
+    if not all_gnodes:
+        st.info("No risk-prone sites found with the current filters.")
+        st.stop()
+else:
+    all_gnodes = sorted(combined["gNodeB"].dropna().unique().tolist())
 
 # Region filter
 all_regions = sorted(combined["region"].dropna().unique().tolist())
@@ -75,72 +128,36 @@ if "Select All" in selected_markets:
 
 # Dates filter
 all_dates = sorted(combined[(combined["region"].isin(selected_regions)) &
-                            (combined["market"].isin(selected_markets))]["filedate"].dt.date.dropna().unique().tolist())
+                             (combined["market"].isin(selected_markets))]["filedate"].dt.date.dropna().unique().tolist())
 selected_dates = st.sidebar.multiselect("Select Date(s)", ["Select All"] + all_dates, default=["Select All"])
 if "Select All" in selected_dates:
     selected_dates = all_dates
 
 # gNodeB filter
-all_gnodes = sorted(combined[(combined["region"].isin(selected_regions)) &
-                             (combined["market"].isin(selected_markets)) &
-                             (combined["filedate"].dt.date.isin(selected_dates))]["gNodeB"].dropna().unique().tolist())
 selected_gnodes = st.sidebar.multiselect("Select gNodeB(s)", ["Select All"] + all_gnodes, default=["Select All"])
 if "Select All" in selected_gnodes:
     selected_gnodes = all_gnodes
 
-# ---------------------
-# View Mode
-# ---------------------
-view_mode = st.sidebar.radio("View Mode", ["15-min Intervals", "Hourly", "Daily"])
-
-# ---------------------
 # Filter datasets
-# ---------------------
-delay_filtered = df_delay[(df_delay["region"].isin(selected_regions)) &
-                          (df_delay["market"].isin(selected_markets)) &
-                          (df_delay["filedate"].dt.date.isin(selected_dates)) &
-                          (df_delay["gNodeB"].isin(selected_gnodes))]
+delay_filtered = delay_data[(delay_data["region"].isin(selected_regions)) &
+                            (delay_data["market"].isin(selected_markets)) &
+                            (delay_data["filedate"].dt.date.isin(selected_dates)) &
+                            (delay_data["gNodeB"].isin(selected_gnodes))]
 
-sample_filtered = df_perc[(df_perc["region"].isin(selected_regions)) &
-                          (df_perc["market"].isin(selected_markets)) &
-                          (df_perc["filedate"].dt.date.isin(selected_dates)) &
-                          (df_perc["gNodeB"].isin(selected_gnodes))]
-
-# ---------------------
-# Resampling
-# ---------------------
-def resample_to_hourly(df, interval_cols):
-    hour_map = {f"{h:02d}": [f"{h:02d}:{m:02d}" for m in range(0,60,15)] for h in range(24)}
-    hourly_df = df.copy()
-    for hour, cols in hour_map.items():
-        available = [c for c in cols if c in hourly_df.columns]
-        if available:
-            hourly_df[hour] = hourly_df[available].mean(axis=1)
-    return hourly_df[["region", "market", "gNodeB", "filedate"] + list(hour_map.keys())]
-
-def resample_to_daily(df, interval_cols):
-    df_daily = df.copy()
-    df_daily["daily_avg"] = df_daily[interval_cols].mean(axis=1)
-    return df_daily[["region", "market", "gNodeB", "filedate", "daily_avg"]]
-
-if view_mode == "Hourly":
-    delay_filtered = resample_to_hourly(delay_filtered, interval_cols)
-    sample_filtered = resample_to_hourly(sample_filtered, interval_cols)
-    interval_cols = [f"{h:02d}" for h in range(24)]
-elif view_mode == "Daily":
-    delay_filtered = resample_to_daily(delay_filtered, interval_cols)
-    sample_filtered = resample_to_daily(sample_filtered, interval_cols)
-    interval_cols = ["daily_avg"]
+sample_filtered = sample_data[(sample_data["region"].isin(selected_regions)) &
+                              (sample_data["market"].isin(selected_markets)) &
+                              (sample_data["filedate"].dt.date.isin(selected_dates)) &
+                              (sample_data["gNodeB"].isin(selected_gnodes))]
 
 # ---------------------
 # gNodeB Count
 # ---------------------
-st.markdown(f"### 🗂️ Selected gNodeBs: **{len(selected_gnodes)}**")
+st.markdown(f"Total gNodeBs: **{len(selected_gnodes)}**")
 
 # ---------------------
 # 1. File Arrival Track
 # ---------------------
-st.subheader(f"📂 File Arrival Track ({view_mode})")
+st.subheader(f"File Arrival Track ({view_mode})")
 if not sample_filtered.empty:
     pivot_table = sample_filtered.pivot_table(index="gNodeB", values=interval_cols, aggfunc="mean")
 
@@ -149,13 +166,21 @@ if not sample_filtered.empty:
 
     styled_table = pivot_table.style.applymap(perc_color).format("{:.0f}%")
     st.dataframe(styled_table, width="stretch")
+    
+    st.markdown("""
+        **Legend:** <div style="display:flex;gap:15px;">
+            <div style="background-color:#2E8B57;width:20px;height:20px;border:1px solid #000"></div> 100% (File Arrived)
+            <div style="background-color:#B22222;width:20px;height:20px;border:1px solid #000"></div> < 100% (File Missing)
+        </div>
+    """, unsafe_allow_html=True)
+
 else:
     st.info("No File Arrival data available.")
 
 # ---------------------
 # 2. Delay Heatmap
 # ---------------------
-st.subheader(f"🌐 Delay Heatmap ({view_mode})")
+st.subheader(f"Delay Heatmap ({view_mode})")
 if not delay_filtered.empty:
     pivot_delay = delay_filtered.pivot_table(index="gNodeB", values=interval_cols, aggfunc="mean")
 
@@ -169,12 +194,11 @@ if not delay_filtered.empty:
     st.dataframe(styled_delay, width="stretch")
 
     st.markdown("""
-        **Legend:**  
-        <div style="display:flex;gap:15px;">
-            <div style="background-color:#d0e7ff;width:20px;height:20px;border:1px solid #000"></div> 0–5 ms  
-            <div style="background-color:#73b3ff;width:20px;height:20px;border:1px solid #000"></div> 5–10 ms  
-            <div style="background-color:#1f78ff;width:20px;height:20px;border:1px solid #000"></div> 10–15 ms  
-            <div style="background-color:#08306b;width:20px;height:20px;border:1px solid #000"></div> 15+ ms  
+        **Legend:** <div style="display:flex;gap:15px;">
+            <div style="background-color:#d0e7ff;width:20px;height:20px;border:1px solid #000"></div> 0–5 ms 
+            <div style="background-color:#73b3ff;width:20px;height:20px;border:1px solid #000"></div> 5–10 ms 
+            <div style="background-color:#1f78ff;width:20px;height:20px;border:1px solid #000"></div> 10–15 ms 
+            <div style="background-color:#08306b;width:20px;height:20px;border:1px solid #000"></div> 15+ ms 
         </div>
     """, unsafe_allow_html=True)
 else:
@@ -183,7 +207,7 @@ else:
 # ---------------------
 # 3. Latency Trend
 # ---------------------
-st.subheader(f"⏱️ Latency Trend by gNodeB ({view_mode})")
+st.subheader(f"Latency Trend by gNodeB ({view_mode})")
 if not delay_filtered.empty:
     melted_delay = delay_filtered.melt(
         id_vars=["gNodeB"],
@@ -201,7 +225,7 @@ else:
 # ---------------------
 # 4. Average Delay
 # ---------------------
-st.subheader(f"📍 Average Delay by Region and Market ({view_mode})")
+st.subheader(f"Average Delay by Region and Market ({view_mode})")
 if not delay_filtered.empty:
     col3, col4 = st.columns(2)
     delay_avg_region = delay_filtered.groupby("region")[interval_cols].mean().mean(axis=1).reset_index(name="avg_delay")
@@ -218,7 +242,7 @@ else:
 # ---------------------
 # 5. Risk Count
 # ---------------------
-st.subheader(f"⚠️ Risk Count by Region and Market ({view_mode})")
+st.subheader(f"Risk Count by Region and Market ({view_mode})")
 if not sample_filtered.empty and "risk" in sample_filtered.columns:
     col5, col6 = st.columns(2)
     risk_region = sample_filtered.groupby("region")["risk"].sum().reset_index()
@@ -235,7 +259,7 @@ else:
 # ---------------------
 # 6. Market Pie
 # ---------------------
-st.subheader(f"🥧 Zero-Interval Distribution by Market ({view_mode})")
+st.subheader(f"Zero-Interval Distribution by Market ({view_mode})")
 if not sample_filtered.empty and view_mode != "Daily":
     melted_percent = sample_filtered.melt(
         id_vars=["market"], value_vars=interval_cols,
